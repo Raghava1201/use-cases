@@ -50,7 +50,7 @@ jobs:
         id: tflint
         uses: terraform-linters/setup-tflint@v4
         with:
-          tflint_version: "v4.0" # Or the latest version
+          tflint_version: "v0.56.0" # Or the latest version
       - name: Run TFLint
         run: tflint --init && tflint -f compact
         working-directory: ./
