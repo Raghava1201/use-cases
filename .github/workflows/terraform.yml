@@ -5,11 +5,12 @@ on:
     branches:
       - main
   pull_request:
-    types: [opened, synchronize] # Trigger on PR open and code changes
+    types: [opened, synchronize]
 
 permissions:
   id-token: write
   pull-requests: write
+  contents: write # Required to commit files to the PR branch
 
 jobs:
   terraform:
@@ -19,6 +20,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }} # Checkout the PR branch
+          fetch-depth: 0 # Required to commit changes
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -42,35 +46,72 @@ jobs:
         run: terraform validate
         working-directory: ./
 
+      - name: Run TFLint
+        id: tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: "v0.50.1" # Or the latest version
+      - name: Run TFLint
+        run: tflint --init && tflint -f compact
+        working-directory: ./
+
+      - name: Run Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ./
+          framework: terraform
+          soft_fail: true # Allow the workflow to continue even if Checkov finds issues
+
       - name: Generate Terraform Plan
         id: plan
         run: terraform plan -no-color -lock=false
         working-directory: ./
 
-      - name: Create Plan Output Markdown
-        id: plan_report
+      - name: Create Plan Output Markdown File
+        id: plan_file
         run: |
-          echo "#### Terraform Plan Output" >> plan.md
-          echo "```terraform" >> plan.md
-          echo "$(terraform plan -no-color)" >> plan.md
-          echo "```" >> plan.md
+          echo "#### Terraform Plan Output" > terraform-plan.md
+          echo "```terraform" >> terraform-plan.md
+          echo "$(terraform plan -no-color)" >> terraform-plan.md
+          echo "```" >> terraform-plan.md
         working-directory: ./
 
+      - name: Commit Terraform Plan
+        id: commit_plan
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "GitHub Actions Bot"
+          git add terraform-plan.md
+          git commit -m "Add Terraform Plan" || echo "No changes to commit"
+          git push origin HEAD:${{ github.head_ref }}
+        working-directory: ./
+
+      # You might want to keep the comment as well, or remove it
       - name: Comment Plan to Pull Request
         uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
         env:
-          PLAN: "${{ steps.plan_report.outputs.stdout }}"
+          PLAN: "${{ steps.plan.outputs.stdout }}"
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
-            const planOutput = fs.readFileSync('./plan.md', 'utf8');
+            const planOutput = process.env.PLAN;
+            let commentBody = "#### Terraform Plan Output\n";
+            if (planOutput.includes("No changes.")) {
+              commentBody += "```terraform\nNo changes. Infrastructure is up to date.\n```";
+            } else if (planOutput.includes("Terraform will perform the following actions:")) {
+              commentBody += "```terraform\n" + planOutput + "\n```";
+            } else if (steps.plan.outcome === 'failure') {
+              commentBody += "**Error generating Terraform Plan.** Please review the workflow logs for details.";
+            } else {
+              commentBody += "*An unexpected issue occurred while generating the Terraform Plan. Please review the workflow logs.*";
+            }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.event.pull_request.number,
-              body: planOutput
+              body: commentBody
             });
 
       - name: Apply Terraform
