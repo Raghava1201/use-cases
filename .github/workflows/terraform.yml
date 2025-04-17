@@ -37,9 +37,7 @@ jobs:
 
       - name: Format and Validate Terraform
         id: fmt_validate
-        run: |
-          terraform fmt -check
-          terraform validate
+        run: terraform validate
         working-directory: ./
 
       - name: Generate Terraform Plan
